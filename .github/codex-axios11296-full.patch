@@ -1,0 +1,96 @@
+diff --git a/PRE_RELEASE_CHANGELOG.md b/PRE_RELEASE_CHANGELOG.md
+index 0066fdca..b1f1c171 100644
+--- a/PRE_RELEASE_CHANGELOG.md
++++ b/PRE_RELEASE_CHANGELOG.md
+@@ -6,6 +6,7 @@
+ 
+ ## Bug Fixes
+ 
++- **FormData to JSON - nested length fields:** Preserve fields such as `metadata[length]` and `metadata.length` as ordinary object properties instead of throwing `RangeError` while building an intermediate array. Repeated values, deeper paths, and existing numeric siblings are retained. Array-only fields and the public API are unchanged. (**[#11296](https://github.com/axios/axios/pull/11296)**, closes **[#11295](https://github.com/axios/axios/issues/11295)**)
+ - **Fetch stream cleanup:** When the fetch adapter rejects a streamed upload for exceeding `maxBodyLength`, or a streamed response for exceeding `maxContentLength`, it now cancels the source stream instead of leaving it open. Previously the size-limit error left the source paused mid-read, so its `cancel` hook never ran and the underlying connection or user-supplied `ReadableStream` stayed open until garbage collection. Cancellation is started without waiting for it, so a slow or failing cancel does not delay or replace the size-limit error. No public API or type changes. ([#11239](https://github.com/axios/axios/pull/11239))
+ - **Nullish request url:** A request with a `null` or `undefined` url on a built-in adapter, whether selected by name or passed as a function such as `axios.getAdapter('fetch')`, now rejects with `AxiosError` and `ERR_INVALID_URL` before anything is sent. Since v1.18.1, adding `params` turned such a url into a query-only url like `?foo=bar`, which browsers resolve against the current page, so `axios.get(null, { params })` sent a request to the page itself. Without params, XHR requested `./null` or `./undefined`, and the Node HTTP adapter threw a native `TypeError`; both now reject with the same `AxiosError`. A `baseURL`, or a `socketPath` on the Node HTTP adapter, still supplies the destination; an empty-string url is still a valid relative url; custom adapters are not checked; and `axios.getUri()` still returns query-only urls. No public API or type changes. (**[#11237](https://github.com/axios/axios/pull/11237)**, closes **[#11160](https://github.com/axios/axios/issues/11160)**)
+ - **Response duration clock:** `response.duration` is now measured with the monotonic `performance.now()` instead of `Date.now()`, falling back to `Date.now()` only in runtimes without `performance.now()`. Since v1.21.0, axios read `Date.now()` on every request, which broke Next.js production builds that use Cache Components (`cacheComponents: true`) because Next.js rejects reading the current time while prerendering; `performance.now()` is the timing API Next.js allows for this. The monotonic clock also stops system clock adjustments from skewing the value. `duration` is rounded to whole milliseconds, so it stays an integer as in v1.21.0, and it is still clamped at `0`. No public API or type changes; the `duration` declaration comments in `index.d.ts` and `index.d.cts` now name the clock. ([#11407](https://github.com/axios/axios/issues/11407))
+diff --git a/lib/helpers/formDataToJSON.js b/lib/helpers/formDataToJSON.js
+index f96ab96a..b61b74c1 100644
+--- a/lib/helpers/formDataToJSON.js
++++ b/lib/helpers/formDataToJSON.js
+@@ -124,6 +124,11 @@ function formDataToJSON(formData) {
+       target[name] = [];
+     }
+ 
++    // A named field must not write through the special Array.length property.
++    if (path[index] === 'length' && utils.isArray(target[name])) {
++      target[name] = arrayToObject(target[name]);
++    }
++
+     const result = buildPath(path, value, target[name], index);
+ 
+     if (result && utils.isArray(target[name])) {
+diff --git a/tests/browser/formdata.browser.test.js b/tests/browser/formdata.browser.test.js
+index 50612134..005fada1 100644
+--- a/tests/browser/formdata.browser.test.js
++++ b/tests/browser/formdata.browser.test.js
+@@ -71,6 +71,16 @@ const getLastRequest = () => {
+ };
+ 
+ describe('formdata (vitest browser)', () => {
++  it('should preserve nested length fields when converting an HTML form to JSON', () => {
++    const form = document.createElement('form');
++    const input = document.createElement('input');
++    input.name = 'metadata[length]';
++    input.value = 'long';
++    form.append(input);
++
++    expect(axios.formToJSON(form)).toEqual({ metadata: { length: 'long' } });
++  });
++
+   beforeEach(() => {
+     requests = [];
+     OriginalXMLHttpRequest = window.XMLHttpRequest;
+diff --git a/tests/unit/helpers/formDataToJSON.test.js b/tests/unit/helpers/formDataToJSON.test.js
+index 33e46042..560c22c6 100644
+--- a/tests/unit/helpers/formDataToJSON.test.js
++++ b/tests/unit/helpers/formDataToJSON.test.js
+@@ -3,6 +3,42 @@ import formDataToJSON from '../../../lib/helpers/formDataToJSON.js';
+ import AxiosError from '../../../lib/core/AxiosError.js';
+ 
+ describe('formDataToJSON', () => {
++  it.each(['metadata[length]', 'metadata.length'])('should preserve the field %s', (name) => {
++    const formData = new FormData();
++    formData.append(name, 'long');
++
++    expect(formDataToJSON(formData)).toEqual({ metadata: { length: 'long' } });
++  });
++
++  it('should preserve repeated length fields', () => {
++    const formData = new FormData();
++    formData.append('metadata[length]', '10');
++    formData.append('metadata[length]', '20');
++
++    expect(formDataToJSON(formData)).toEqual({ metadata: { length: ['10', '20'] } });
++  });
++
++  it('should preserve nested fields below length', () => {
++    const formData = new FormData();
++    formData.append('metadata[length][unit]', 'cm');
++
++    expect(formDataToJSON(formData)).toEqual({ metadata: { length: { unit: 'cm' } } });
++  });
++
++  it.each([true, false])('should retain numeric siblings in either order: %s', (first) => {
++    const formData = new FormData();
++    const entries = [
++      ['items[length]', 'long'],
++      ['items[0]', 'first'],
++      ['items[1]', 'second'],
++    ];
++    (first ? entries : entries.reverse()).forEach(([key, value]) => formData.append(key, value));
++
++    expect(formDataToJSON(formData)).toEqual({
++      items: { 0: 'first', 1: 'second', length: 'long' },
++    });
++  });
++
+   it('should convert a FormData Object to JSON Object', () => {
+     const formData = new FormData();
+ 

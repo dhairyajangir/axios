@@ -1,0 +1,152 @@
+# REVIEW ONLY: not published or executed. Fork-only evidence; never include in the PR.
+name: Axios 11296 actual project suites (fork only)
+on:
+  push:
+    branches: [validation/axios11296-full-20261112]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: ${{ github.repository == 'dhairyajangir/axios' && github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      FOCUSED_TEST_PATTERN: 'should preserve the field|should preserve repeated length fields|should preserve nested fields below length|should retain numeric siblings in either order'
+    steps:
+      - name: Checkout validation commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 26.10.0
+          package-manager-cache: false
+      - name: Verify and materialize reviewed candidate
+        id: materialize
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=4ee8d46fc463770b8f5da718d5449a5b027b2c08
+          BASE_TREE=d399225a2726df161757a1028d07df6686d7bd55
+          CANDIDATE_TREE=0cff277cecb8c7a26a8283ee0a41625a1ba74bd0
+          test "$(node --version)" = v26.10.0
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-list --parents -n 1 HEAD)" = "$GITHUB_SHA $BASE"
+          test "$(git rev-parse "$BASE^{tree}")" = "$BASE_TREE"
+          git diff-tree --no-commit-id --name-status -r HEAD > "$RUNNER_TEMP/added.actual"
+          printf 'A\t.github/codex-axios11296-full.patch\nA\t.github/workflows/codex-axios11296-full.yml\n' > "$RUNNER_TEMP/added.expected"
+          diff -u "$RUNNER_TEMP/added.expected" "$RUNNER_TEMP/added.actual"
+          printf '%s  %s\n' cccd0d82cacd5f8c89ac24de9a20623b01e330c662dab73c1c0a56a074fea809 .github/codex-axios11296-full.patch | sha256sum -c -
+          cp .github/codex-axios11296-full.patch "$RUNNER_TEMP/axios11296-full.patch"
+          git checkout --detach "$BASE"
+          test -z "$(git status --porcelain)"
+          git apply --check "$RUNNER_TEMP/axios11296-full.patch"
+          git apply --index "$RUNNER_TEMP/axios11296-full.patch"
+          test "$(git write-tree)" = "$CANDIDATE_TREE"
+          printf '%s\n' PRE_RELEASE_CHANGELOG.md lib/helpers/formDataToJSON.js tests/browser/formdata.browser.test.js tests/unit/helpers/formDataToJSON.test.js > "$RUNNER_TEMP/changed.expected"
+          git diff --cached --name-only > "$RUNNER_TEMP/changed.actual"
+          diff -u "$RUNNER_TEMP/changed.expected" "$RUNNER_TEMP/changed.actual"
+          git diff --quiet
+          test -z "$(git ls-files --others --exclude-standard)"
+          for tree in "$BASE_TREE" "$CANDIDATE_TREE"; do
+            if git ls-tree -r "$tree" | awk '$1 == "120000" || $1 == "160000" { found=1 } END { exit found ? 0 : 1 }'; then
+              echo 'Unexpected symlink or submodule in source tree' >&2
+              exit 1
+            fi
+          done
+          test "$(cat .npmrc)" = 'ignore-scripts=true'
+          test "$(npm prefix)" = "$(pwd -P)"
+          node --version
+          npm --version
+      - name: Install dependencies without lifecycle scripts
+        id: install_deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(npm prefix)" = "$(pwd -P)"
+          test "$(npm config get registry)" = 'https://registry.npmjs.org/'
+          npm ci --ignore-scripts
+      - name: Lint
+        id: lint
+        run: npm run lint
+      - name: Build project
+        id: build
+        run: npm run build
+      - name: Install Playwright browsers and Linux dependencies
+        id: browser_setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(npm prefix)" = "$(pwd -P)"
+          test -x node_modules/.bin/playwright
+          npx playwright install --with-deps
+      - name: Run all unit tests
+        id: unit
+        run: npm run test:vitest:unit
+      - name: Run candidate regression cases
+        id: green
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:vitest:unit -- tests/unit/helpers/formDataToJSON.test.js -t "$FOCUSED_TEST_PATTERN" 2>&1 | tee "$RUNNER_TEMP/axios11296-candidate-green.log"
+          python3 - "$RUNNER_TEMP/axios11296-candidate-green.log" <<'PYTEST'
+          import pathlib, re, sys
+          s = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', pathlib.Path(sys.argv[1]).read_text(errors='replace'))
+          if not re.search(r'Tests\s+6 passed(?:\s|\||$)', s):
+              raise SystemExit('Expected exactly six candidate regression passes')
+          PYTEST
+      - name: Verify regression cases fail on unchanged base
+        id: red
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE_TREE=d399225a2726df161757a1028d07df6686d7bd55
+          BASE_DIR="$RUNNER_TEMP/axios11296-full-base"
+          mkdir "$BASE_DIR"
+          git archive "$BASE_TREE" | tar -xf - -C "$BASE_DIR"
+          cp tests/unit/helpers/formDataToJSON.test.js "$BASE_DIR/tests/unit/helpers/formDataToJSON.test.js"
+          test "$(git hash-object "$BASE_DIR/lib/helpers/formDataToJSON.js")" = "$(git rev-parse "$BASE_TREE:lib/helpers/formDataToJSON.js")"
+          test "$(git hash-object "$BASE_DIR/tests/unit/helpers/formDataToJSON.test.js")" = "$(git rev-parse :tests/unit/helpers/formDataToJSON.test.js)"
+          cmp package.json "$BASE_DIR/package.json"
+          cmp package-lock.json "$BASE_DIR/package-lock.json"
+          cmp vitest.config.js "$BASE_DIR/vitest.config.js"
+          ln -s "$GITHUB_WORKSPACE/node_modules" "$BASE_DIR/node_modules"
+          test "$(cd "$BASE_DIR" && npm prefix)" = "$BASE_DIR"
+          set +e
+          (cd "$BASE_DIR" && npm run test:vitest:unit -- tests/unit/helpers/formDataToJSON.test.js -t "$FOCUSED_TEST_PATTERN") 2>&1 | tee "$RUNNER_TEMP/axios11296-base-red.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          test "${statuses[0]}" -eq 1
+          test "${statuses[1]}" -eq 0
+          python3 - "$RUNNER_TEMP/axios11296-base-red.log" <<'PYTEST'
+          import pathlib, re, sys
+          s = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', pathlib.Path(sys.argv[1]).read_text(errors='replace'))
+          if not re.search(r'Tests\s+6 failed(?:\s|\||$)', s):
+              raise SystemExit('Expected exactly six baseline test failures')
+          for name in ['should preserve the field metadata[length]', 'should preserve the field metadata.length', 'should preserve repeated length fields', 'should preserve nested fields below length', 'should retain numeric siblings in either order: true', 'should retain numeric siblings in either order: false']:
+              if name not in s:
+                  raise SystemExit(f'Missing expected case: {name}')
+          if 'RangeError' not in s or 'TypeError' not in s:
+              raise SystemExit('Expected error types not reported; inspect actual failure traces')
+          PYTEST
+          echo 'All six baseline regression cases failed; independently inspect each failure trace.'
+      - name: Run all headless browser tests
+        id: browser
+        if: ${{ !cancelled() && steps.materialize.outcome == 'success' && steps.install_deps.outcome == 'success' && steps.lint.outcome == 'success' && steps.build.outcome == 'success' && steps.browser_setup.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = 0cff277cecb8c7a26a8283ee0a41625a1ba74bd0
+          git diff --quiet
+          test -z "$(git ls-files --others --exclude-standard)"
+          npm run test:vitest:browser:headless
+      - name: Confirm reviewed source remains unchanged
+        if: ${{ !cancelled() && steps.materialize.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git write-tree)" = 0cff277cecb8c7a26a8283ee0a41625a1ba74bd0
+          git diff --quiet
+          test -z "$(git ls-files --others --exclude-standard)"
