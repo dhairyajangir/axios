@@ -1,0 +1,80 @@
+# REVIEW ONLY. Not published or executed. Intended only for the user's fork;
+# never include this file or its payloads in the upstream PR.
+name: Axios 11296 source diagnostic (fork only)
+
+on:
+  push:
+    branches: [validation/axios11296-native-20261112]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: ${{ github.repository == 'dhairyajangir/axios' && github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout validation commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 26.10.0
+          package-manager-cache: false
+
+      - name: Verify inputs, candidate tree and run six cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=4ee8d46fc463770b8f5da718d5449a5b027b2c08
+          BASE_TREE=d399225a2726df161757a1028d07df6686d7bd55
+          CANDIDATE_TREE=0cff277cecb8c7a26a8283ee0a41625a1ba74bd0
+          test "$(node --version)" = v26.10.0
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-list --parents -n 1 HEAD)" = "$GITHUB_SHA $BASE"
+          test "$(git rev-parse "$BASE^{tree}")" = "$BASE_TREE"
+
+          # Verify the exact validation-only additions before copying them.
+          git diff-tree --no-commit-id --name-status -r HEAD > "$RUNNER_TEMP/added.actual"
+          printf 'A\t.github/codex-axios11296-blocked-form-data.mjs\nA\t.github/codex-axios11296-loader.mjs\nA\t.github/codex-axios11296-probe.mjs\nA\t.github/codex-axios11296.patch\nA\t.github/workflows/codex-axios11296.yml\n' > "$RUNNER_TEMP/added.expected"
+          diff -u "$RUNNER_TEMP/added.expected" "$RUNNER_TEMP/added.actual"
+          printf '%s  %s\n' \
+            cccd0d82cacd5f8c89ac24de9a20623b01e330c662dab73c1c0a56a074fea809 .github/codex-axios11296.patch \
+            1f37383e451d5d834ed222e06a08ecb5023dcf9bafd4d168b1cfecddbbaa3874 .github/codex-axios11296-probe.mjs \
+            5a3468d02856253d432c97220f88e4b74a398e0fc1db7f8acba5ef7e2efffed8 .github/codex-axios11296-loader.mjs \
+            5ed6d8dc0eb79ac5192cbc8744ecb21a517f089504583b00778a4f1e72003960 .github/codex-axios11296-blocked-form-data.mjs | sha256sum -c -
+
+          mkdir "$RUNNER_TEMP/axios11296-payload" "$RUNNER_TEMP/axios11296-base" "$RUNNER_TEMP/axios11296-candidate"
+          cp .github/codex-axios11296.patch "$RUNNER_TEMP/axios11296-payload/change.patch"
+          cp .github/codex-axios11296-probe.mjs "$RUNNER_TEMP/axios11296-payload/probe.mjs"
+          cp .github/codex-axios11296-loader.mjs "$RUNNER_TEMP/axios11296-payload/loader.mjs"
+          cp .github/codex-axios11296-blocked-form-data.mjs "$RUNNER_TEMP/axios11296-payload/blocked-form-data.mjs"
+          git checkout --detach "$BASE"
+          test -z "$(git status --porcelain)"
+          git apply --check "$RUNNER_TEMP/axios11296-payload/change.patch"
+          git apply --index "$RUNNER_TEMP/axios11296-payload/change.patch"
+          test "$(git write-tree)" = "$CANDIDATE_TREE"
+          printf '%s\n' PRE_RELEASE_CHANGELOG.md lib/helpers/formDataToJSON.js tests/browser/formdata.browser.test.js tests/unit/helpers/formDataToJSON.test.js > "$RUNNER_TEMP/changed.expected"
+          git diff --cached --name-only > "$RUNNER_TEMP/changed.actual"
+          diff -u "$RUNNER_TEMP/changed.expected" "$RUNNER_TEMP/changed.actual"
+          for tree in "$BASE_TREE" "$CANDIDATE_TREE"; do
+            if git ls-tree -r "$tree" | awk '$1 == "120000" || $1 == "160000" { found=1 } END { exit found ? 0 : 1 }'; then
+              echo 'Unexpected symlink or submodule in source tree' >&2
+              exit 1
+            fi
+          done
+          git archive "$BASE_TREE" | tar -xf - -C "$RUNNER_TEMP/axios11296-base"
+          git archive "$CANDIDATE_TREE" | tar -xf - -C "$RUNNER_TEMP/axios11296-candidate"
+          export DIAG_BASE="$RUNNER_TEMP/axios11296-base"
+          export DIAG_CANDIDATE="$RUNNER_TEMP/axios11296-candidate"
+
+          # Check that accidental use of the stand-in is detected.
+          node --input-type=module -e 'const m=await import(process.argv[1]); try { new m.default(); throw Error("stub did not reject"); } catch(e) { if(e.code !== "AXIOS_DIAGNOSTIC_STUB_USED") throw e; }' "$RUNNER_TEMP/axios11296-payload/blocked-form-data.mjs"
+          node --experimental-loader "$RUNNER_TEMP/axios11296-payload/loader.mjs" "$RUNNER_TEMP/axios11296-payload/probe.mjs" base "$DIAG_BASE"
+          node --experimental-loader "$RUNNER_TEMP/axios11296-payload/loader.mjs" "$RUNNER_TEMP/axios11296-payload/probe.mjs" candidate "$DIAG_CANDIDATE"
+          echo 'Six standalone candidate cases passed after six baseline failures; inspect each baseline result. This is not Vitest, full-suite validation, browser testing or upstream CI.'
