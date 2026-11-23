@@ -1,0 +1,51 @@
+name: Axios 11296 actual project suites (fork only)
+on:
+  push:
+    branches: [codex/validate-axios-11296-20261124]
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: ${{ github.repository == 'dhairyajangir/axios' && github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20.20.2, 22.23.5, 24.22.3]
+    steps:
+      - name: Checkout validation commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - name: Check out the exact Axios candidate
+        run: |
+          test "$(git rev-parse HEAD^)" = 'cd263dc3daec9b7d55f8e3801f894972a4bad61f'
+          git checkout --detach 'cd263dc3daec9b7d55f8e3801f894972a4bad61f'
+          test "$(git rev-parse HEAD^{tree})" = '0cff277cecb8c7a26a8283ee0a41625a1ba74bd0'
+          test -z "$(git status --porcelain)"
+          test "$(cat .npmrc)" = 'ignore-scripts=true'
+          node --version
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+      - name: Lint and build
+        run: npm run lint && npm run build
+      - name: Install the three browser engines
+        run: npx --no-install playwright install --with-deps
+      - name: Unit tests
+        id: unit
+        run: npm run test:vitest:unit
+      - name: Browser tests
+        if: ${{ !cancelled() && (steps.unit.outcome == 'success' || steps.unit.outcome == 'failure') }}
+        run: npm run test:vitest:browser:headless
+      - name: Verify candidate source
+        if: ${{ !cancelled() && (steps.unit.outcome == 'success' || steps.unit.outcome == 'failure') }}
+        run: |
+          test "$(git rev-parse HEAD)" = 'cd263dc3daec9b7d55f8e3801f894972a4bad61f'
+          git diff --exit-code
