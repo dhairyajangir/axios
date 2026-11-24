@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 3
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
@@ -26,7 +26,7 @@ jobs:
           package-manager-cache: false
       - name: Check out the exact Axios candidate
         run: |
-          test "$(git rev-parse HEAD^)" = '755507da8761fa24ec5f0ad0be3f6702693436c6'
+          test "$(git rev-parse HEAD^^)" = '755507da8761fa24ec5f0ad0be3f6702693436c6'
           git checkout --detach '755507da8761fa24ec5f0ad0be3f6702693436c6'
           test "$(git rev-parse HEAD^{tree})" = 'c53c38d6b8f0b3c47a650d0ffb6aeba4a5a4ef0a'
           test -z "$(git status --porcelain)"
@@ -40,13 +40,17 @@ jobs:
         id: unit
         run: npm run test:vitest:unit
       - name: Install the three browser engines
+        id: browser-setup
         if: ${{ !cancelled() && (steps.unit.outcome == 'success' || steps.unit.outcome == 'failure') }}
         timeout-minutes: 5
         env:
           PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: 30000
-        run: npx --no-install playwright install --with-deps
+        run: |
+          sudo sed -i -E '/^URIs:/s@mirror\+file:/etc/apt/apt-mirrors[^ ]*\.txt@https://archive.ubuntu.com/ubuntu@g' /etc/apt/sources.list.d/ubuntu.sources
+          printf '%s\n' 'Acquire::http::Timeout "15";' 'Acquire::https::Timeout "15";' 'Acquire::Retries "2";' | sudo tee /etc/apt/apt.conf.d/99-validation-timeouts >/dev/null
+          npx --no-install playwright install --with-deps
       - name: Browser tests
-        if: ${{ !cancelled() && (steps.unit.outcome == 'success' || steps.unit.outcome == 'failure') }}
+        if: ${{ !cancelled() && steps.browser-setup.outcome == 'success' }}
         run: npm run test:vitest:browser:headless
       - name: Verify candidate source
         if: ${{ !cancelled() && (steps.unit.outcome == 'success' || steps.unit.outcome == 'failure') }}
